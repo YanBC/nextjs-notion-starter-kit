@@ -75,7 +75,6 @@ yarn link react react-dom
 With this setup, in one tab, you can run `yarn dev` to keep `react-notion-x` up-to-date, and in another tab, you can run `yarn dev` to keep `nextjs-notion-starter-kit` up-to-date.
 
 ### Gotchas
-
 Whenever you make a change to one of the `react-notion-x` packages, it will automatically be recompiled into its respective `build` folder, and the `yarn dev` from `nextjs-notion-starter-kit` should hot-reload it in the browser.
 
 Sometimes, this process gets a little out of whack, and if you're not sure what's going on, I usually just quit one or both of the `yarn dev` commands and restart them.
