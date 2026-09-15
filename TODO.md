@@ -37,10 +37,22 @@ and all three API routes 500.
       itself as `user-agent: got (https://github.com/sindresorhus/got)` by
       default, which is the shape that gets refused. notion-client has no global
       option for this, hence the per-call threading.
-- [ ] If headers alone aren't enough, set `NOTION_TOKEN` in Vercel to a
-      `token_v2` cookie from a logged-in Notion session — the plumbing is
-      already in place and inert while unset. It grants full access to that
-      Notion account and expires periodically, so treat it as a real secret.
+      CONFIRMED FIXED: the next deployment got past the 403 entirely and
+      failed much later, during prerendering. `NOTION_TOKEN` turned out to be
+      unnecessary; the plumbing stays, inert, in case it is ever needed.
+- [x] **Record-map shape drift (`__version__: 3`).** With the 403 cleared, the
+      export crashed with `TypeError: Cannot read properties of undefined
+      (reading 'replace')` at `uuidToId(block.id)`
+      (`react-notion-x/build/index.js:2067`). Notion now returns each record as
+      `{ spaceId, value: { value: <record>, role } }`, where notion-client 6.16
+      and react-notion-x 6.16 expect `{ role, value: <record> }` — so every
+      record arrived without `id`, `type` or `space_id`. Verified directly
+      against `/api/v3/syncRecordValues`.
+      `normalizeRecordMap` in `lib/notion-api.ts` reshapes it, applied by
+      overriding `NotionAPI.fetch` so notion-client's own traversal (which
+      decides what still needs fetching) also sees the corrected shape. Both
+      transforms are shape-checked and idempotent, so an old-shape record map
+      passes through untouched.
 - [ ] Confirm after deploying: `/feed`, `/sitemap.xml` and
       `/api/social-image?id=<root>` return 200, and `x-vercel-cache` reads
       `HIT`/`MISS` rather than `STALE`.
@@ -91,7 +103,11 @@ here. Skipping only non-root pages would be a reasonable future refinement.
       render — and ISR-cache — someone else's Notion page (phishing / spam / SEO
       poisoning under this domain, on this Vercel quota). Now set to
       `cf1ea656-17fa-4fa7-a13a-ad33c5c79bc5` ("Yanbc's Notion"), obtained from
-      `/api/v3/getPublicPageData`. Together with the always-truthy-guard fix in P2,
+      `/api/v3/getPublicPageData`. Note this check was *still* inert until the
+      record-map normalization above landed: `lib/acl.ts` reads
+      `value.space_id`, which the new API shape no longer provides, so the
+      guard short-circuited and waved everything through. Restoring `space_id`
+      during normalization is what actually turns the check on. Together with the always-truthy-guard fix in P2,
       the workspace check is now actually enforced. This also bounds the unbounded
       ISR growth noted below.
 - [x] **`dangerouslyAllowSVG: true`** (`next.config.js`). Decided by the site
@@ -99,6 +115,15 @@ here. Skipping only non-root pages would be a reasonable future refinement.
       setting `rootNotionSpaceId` below, which stops an attacker from getting an
       attacker-authored page (and so an attacker-uploaded SVG) rendered through
       this origin in the first place.
+- [ ] **notion-client / react-notion-x are on 6.16.0; 8.0.8 is current.** The
+      `normalizeRecordMap` shim exists only because these versions predate
+      Notion's `__version__: 3` record shape. Upgrading is the real fix and
+      would let the shim be deleted, but it is a two-major-version jump with
+      API changes, and it needs an environment that can actually reach
+      notion.so to test rendering — this sandbox cannot, so every attempt costs
+      a deploy round-trip. `react-notion-x@8` requires React >= 18 (satisfied)
+      and Node >= 18 (Vercel is fine; `.github/workflows/build.yml` pins 16 and
+      would need bumping). Pairs naturally with the Next.js upgrade below.
 - [ ] **Next.js 12.3.4 is end-of-life** — no security patches since 2023. Not
       currently exploitable here (CVE-2025-29927 needs middleware, which this app
       doesn't have), but unpatched image-optimizer and cache advisories accumulate.

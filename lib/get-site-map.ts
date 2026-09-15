@@ -5,7 +5,7 @@ import * as config from './config'
 import * as types from './types'
 import { includeNotionIdInUrls } from './config'
 import { getCanonicalPageId } from './get-canonical-page-id'
-import { notion, notionGotOptions } from './notion-api'
+import { notion } from './notion-api'
 
 const uuid = !!includeNotionIdInUrls
 
@@ -31,7 +31,7 @@ async function getAllPagesImpl(
 ): Promise<Partial<types.SiteMap>> {
   const getPage = async (pageId: string, ...args) => {
     console.log('\nnotion getPage', uuidToId(pageId))
-    return notion.getPage(pageId, { ...args[0], gotOptions: notionGotOptions })
+    return notion.getPage(pageId, ...args)
   }
 
   const pageMap = await getAllPagesInSpace(
