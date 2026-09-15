@@ -17,13 +17,21 @@ sitemap dead (SEO), new/edited Notion pages never appear.
 - [ ] Root-cause the 500s. Needs `vercel logs <deployment-url>` or a read-scoped
       Vercel token. Fastest local repro: `yarn dev`, then hit
       `localhost:3000/api/search-notion` and read the stack trace.
+      RULED OUT: the root page's public share link has *not* lapsed.
+      `/api/v3/getPublicPageData` returns `isPublicShareLink: true`,
+      `requireLogin: false`, `publicAccess.disabled: false`, `isDeleted: false`,
+      and `loadPageChunk` returns blocks normally. Notion is answering fine.
       Remaining suspects, in order:
-      1. The root page's public share link lapsed (most likely — it produces a
-         Notion 403/404 on every request and needs no code change to fix).
-      2. Redis. The missing Keyv `error` listener below is fixed, which removes
-         the "one blip kills the lambda" failure mode, so if Redis was the cause
-         the site should recover on the next deploy.
-      3. `notion-client` 6.16 vs. the current Notion private API.
+      1. Redis. TLS is not enabled on the server, every request path touches the
+         cache, and until the fix below there was no Keyv `error` listener — so a
+         single connection error threw an uncaught exception and killed the
+         lambda, 500ing everything in it. That listener is now attached, so a
+         redeploy alone may clear the outage.
+      2. `notion-client` 6.16 vs. the current Notion private API. A response-shape
+         change would throw during render while simple fetches still succeed.
+         Weak corroboration: the page block returned by `loadPageChunk` no longer
+         carries a `space_id` field, so the shape has drifted somewhat from what
+         this version of the library expects.
 - [ ] After the fix, confirm `/feed`, `/sitemap.xml`, `/api/social-image?id=<root>`
       all return 200 and that `x-vercel-cache` goes `HIT`/`MISS` rather than `STALE`.
 
@@ -60,13 +68,16 @@ sitemap dead (SEO), new/edited Notion pages never appear.
       on every route. A CSP is deliberately *not* set: this site renders arbitrary
       Notion content plus Twitter/PostHog/Fathom/Prism, so a blanket policy has to
       be tuned against real pages first.
-- [ ] **Open Notion proxy — ACL is inert.** `site.config.ts:9` sets
-      `rootNotionSpaceId: null`, which disables the workspace check in
-      `lib/acl.ts` and `pages/api/notion-page-info.tsx`. Anyone can load
-      `https://yanbc.info/<any-public-notion-page-id>` and have your domain render —
-      and ISR-cache — someone else's Notion page. Phishing / spam / SEO poisoning
-      under your domain, on your Vercel quota. The check itself is now fixed (see
-      P2), so this needs only the ID. See "Blocked on input".
+- [x] **Open Notion proxy — ACL was inert.** `rootNotionSpaceId` was `null`,
+      which disabled the workspace check in `lib/acl.ts` and
+      `pages/api/notion-page-info.tsx`: anyone could load
+      `https://www.yanbc.info/<any-public-notion-page-id>` and have this domain
+      render — and ISR-cache — someone else's Notion page (phishing / spam / SEO
+      poisoning under this domain, on this Vercel quota). Now set to
+      `cf1ea656-17fa-4fa7-a13a-ad33c5c79bc5` ("Yanbc's Notion"), obtained from
+      `/api/v3/getPublicPageData`. Together with the always-truthy-guard fix in P2,
+      the workspace check is now actually enforced. This also bounds the unbounded
+      ISR growth noted below.
 - [x] **`dangerouslyAllowSVG: true`** (`next.config.js`). Decided by the site
       owner: keep SVG support enabled. No change. The residual risk is bounded by
       setting `rootNotionSpaceId` below, which stops an attacker from getting an
@@ -111,28 +122,13 @@ sitemap dead (SEO), new/edited Notion pages never appear.
       `blog.yanbc.info` 308-redirects to it, leaving exactly one live address.
 - [ ] **Unbounded ISR growth.** `fallback: true` plus any 32-hex string creates a
       new permanently-cached ISR entry per unique request, each triggering a full
-      Notion fetch (`pages/[pageId].tsx`). Setting `rootNotionSpaceId` bounds this;
-      also consider `revalidate: 60` instead of `10`. Left alone for now because it
-      changes content freshness, which is a judgement call.
+      Notion fetch (`pages/[pageId].tsx`). Now bounded by `rootNotionSpaceId`,
+      which rejects anything outside the workspace. Still worth considering
+      `revalidate: 60` instead of `10`; left alone because it changes content
+      freshness, which is a judgement call.
 
 ## Blocked on input
 
-- [ ] **`rootNotionSpaceId`.** The UUID of the Notion workspace that owns the root
-      page — not the page ID, and it appears in no URL. Put it in `site.config.ts`;
-      this single value closes the open-proxy issue and bounds ISR growth.
-      Either open www.yanbc.info and read `window.block.space_id` in the browser
-      console (NotionPage.tsx attaches it), or run:
-
-      ```bash
-      curl -s -X POST 'https://www.notion.so/api/v3/loadPageChunk' \
-        -H 'Content-Type: application/json' \
-        -d '{"pageId":"16f72837-ae26-4610-96a7-4ede6774905c","limit":1,"cursor":{"stack":[]},"chunkNumber":0,"verticalColumns":false}' \
-        | python3 -c "import json,sys;d=json.load(sys.stdin);print(next(iter(d['recordMap']['block'].values()))['value']['space_id'])"
-      ```
-
-      That curl also doubles as the P0 diagnostic: it is the same unofficial API
-      the site calls on every render, so a 401/403 instead of a UUID means the root
-      page's public share link has lapsed.
 - [ ] **Redis TLS.** Deferred by the site owner: TLS is not currently enabled on
       the Redis server, so the password crosses the network in plaintext. The code
       is ready — once the server terminates TLS, set `REDIS_PROTOCOL=rediss` (and
@@ -141,7 +137,7 @@ sitemap dead (SEO), new/edited Notion pages never appear.
 
 ## Suggested order
 
-1. Set `rootNotionSpaceId` (see above), redeploy.
-2. Make `www.yanbc.info` primary in Vercel so `blog.yanbc.info` redirects to it.
-3. Vercel logs → fix the P0 outage.
+1. Deploy this branch — it may clear the P0 outage on its own (see P0).
+2. If still down: `yarn dev`, hit `/api/search-notion`, read the stack trace.
+3. Make `www.yanbc.info` primary in Vercel so `blog.yanbc.info` redirects to it.
 4. Redis TLS, then the P2 remainder.
