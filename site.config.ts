@@ -4,13 +4,14 @@ export default siteConfig({
   // the site's root Notion page (required)
   rootNotionPageId: '16f72837ae26461096a74ede6774905c',
 
-  // if you want to restrict pages to a single notion workspace (optional)
-  // (this should be a Notion ID; see the docs for how to extract this)
-  rootNotionSpaceId: null,
+  // restricts rendering to pages in this Notion workspace ("Yanbc's Notion").
+  // without it, any public Notion page id in the URL is rendered and ISR-cached
+  // under this domain. see lib/acl.ts and pages/api/notion-page-info.tsx.
+  rootNotionSpaceId: 'cf1ea656-17fa-4fa7-a13a-ad33c5c79bc5',
 
   // basic site info (required)
   name: 'Code & Cozy',
-  domain: 'yanbc.info',
+  domain: 'www.yanbc.info',
   author: 'Yanbc',
 
   // open graph metadata (optional)

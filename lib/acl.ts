@@ -43,12 +43,14 @@ export async function pageAcl({
     site.rootNotionSpaceId &&
     rootSpaceId !== site.rootNotionSpaceId
   ) {
-    if (process.env.NODE_ENV) {
-      return {
-        error: {
-          statusCode: 404,
-          message: `Notion page "${pageId}" doesn't belong to the Notion workspace owned by "${site.domain}".`
-        }
+    // note: this was previously wrapped in `if (process.env.NODE_ENV)`, which is
+    // always truthy ('production' | 'development' | 'test'), so the guard it was
+    // meant to express never existed. The workspace check is the entire point of
+    // this function, so it now applies unconditionally.
+    return {
+      error: {
+        statusCode: 404,
+        message: `Notion page "${pageId}" doesn't belong to the Notion workspace owned by "${site.domain}".`
       }
     }
   }

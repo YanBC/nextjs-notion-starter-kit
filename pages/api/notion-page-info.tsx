@@ -1,6 +1,5 @@
 import { NextApiRequest, NextApiResponse } from 'next'
 
-import got from 'got'
 import { PageBlock } from 'notion-types'
 import {
   getBlockIcon,
@@ -11,27 +10,36 @@ import {
 } from 'notion-utils'
 
 import * as libConfig from '@/lib/config'
+import { isImageUrlReachable } from '@/lib/image-fetch'
 import { mapImageUrl } from '@/lib/map-image-url'
 import { notion } from '@/lib/notion-api'
-import { NotionPageInfo } from '@/lib/types'
+import { ExtendedRecordMap, NotionPageInfo } from '@/lib/types'
 
 export default async (req: NextApiRequest, res: NextApiResponse) => {
   if (req.method !== 'POST') {
     return res.status(405).send({ error: 'method not allowed' })
   }
 
-  const pageId: string = parsePageId(req.body.pageId)
+  const pageId: string = parsePageId(req.body?.pageId)
   if (!pageId) {
-    throw new Error('Invalid notion page id')
+    return res.status(400).send({ error: 'invalid notion page id' })
   }
 
-  const recordMap = await notion.getPage(pageId)
+  let recordMap: ExtendedRecordMap
+  try {
+    recordMap = await notion.getPage(pageId)
+  } catch (err) {
+    console.warn('notion-page-info error', pageId, err.message)
+    return res.status(404).send({ error: `notion page "${pageId}" not found` })
+  }
 
   const keys = Object.keys(recordMap?.block || {})
   const block = recordMap?.block?.[keys[0]]?.value
 
   if (!block) {
-    throw new Error('Invalid recordMap for page')
+    return res
+      .status(404)
+      .send({ error: `invalid recordMap for page "${pageId}"` })
   }
 
   const blockSpaceId = block.space_id
@@ -119,34 +127,26 @@ export default async (req: NextApiRequest, res: NextApiResponse) => {
   res.status(200).json(pageInfo)
 }
 
-async function isUrlReachable(url: string | null): Promise<boolean> {
-  if (!url) {
-    return false
-  }
-
-  try {
-    await got.head(url)
-    return true
-  } catch (err) {
-    return false
-  }
-}
-
 async function getCompatibleImageUrl(
   url: string | null,
   fallbackUrl: string | null
 ): Promise<string | null> {
-  const image = (await isUrlReachable(url)) ? url : fallbackUrl
+  const image = (await isImageUrlReachable(url)) ? url : fallbackUrl
 
   if (image) {
-    const imageUrl = new URL(image)
+    try {
+      const imageUrl = new URL(image)
 
-    if (imageUrl.host === 'images.unsplash.com') {
-      if (!imageUrl.searchParams.has('w')) {
-        imageUrl.searchParams.set('w', '1200')
-        imageUrl.searchParams.set('fit', 'max')
-        return imageUrl.toString()
+      if (imageUrl.host === 'images.unsplash.com') {
+        if (!imageUrl.searchParams.has('w')) {
+          imageUrl.searchParams.set('w', '1200')
+          imageUrl.searchParams.set('fit', 'max')
+          return imageUrl.toString()
+        }
       }
+    } catch {
+      // a non-URL fallback (e.g. a misconfigured defaultPageCover) shouldn't 500
+      return null
     }
   }
 
