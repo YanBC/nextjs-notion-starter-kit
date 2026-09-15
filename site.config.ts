@@ -10,7 +10,7 @@ export default siteConfig({
 
   // basic site info (required)
   name: 'Code & Cozy',
-  domain: 'yanbc.info',
+  domain: 'www.yanbc.info',
   author: 'Yanbc',
 
   // open graph metadata (optional)

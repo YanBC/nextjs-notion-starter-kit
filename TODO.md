@@ -53,7 +53,8 @@ sitemap dead (SEO), new/edited Notion pages never appear.
       cache with a warning), credentials are URL-encoded, and `REDIS_PROTOCOL` /
       `REDIS_PORT` / `REDIS_URL` are configurable. **The default is still plain
       `redis://` to avoid breaking a working deployment — set
-      `REDIS_PROTOCOL=rediss` in Vercel.** See "Blocked on input".
+      `REDIS_PROTOCOL=rediss` in Vercel** once the server supports it — see the
+      open TLS item below.
 - [x] **No security headers.** `next.config.js` now sets `X-Content-Type-Options`,
       `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy` and `Permissions-Policy`
       on every route. A CSP is deliberately *not* set: this site renders arbitrary
@@ -66,9 +67,11 @@ sitemap dead (SEO), new/edited Notion pages never appear.
       and ISR-cache — someone else's Notion page. Phishing / spam / SEO poisoning
       under your domain, on your Vercel quota. The check itself is now fixed (see
       P2), so this needs only the ID. See "Blocked on input".
-- [ ] **`dangerouslyAllowSVG: true`** (`next.config.js`). Left on deliberately —
-      turning it off breaks any Notion page using an SVG icon or cover, which I
-      can't verify from here. See "Blocked on input".
+- [x] **`dangerouslyAllowSVG: true`** (`next.config.js`). Decided by the site
+      owner: keep SVG support enabled. No change. The residual risk is bounded by
+      setting `rootNotionSpaceId` below, which stops an attacker from getting an
+      attacker-authored page (and so an attacker-uploaded SVG) rendered through
+      this origin in the first place.
 - [ ] **Next.js 12.3.4 is end-of-life** — no security patches since 2023. Not
       currently exploitable here (CVE-2025-29927 needs middleware, which this app
       doesn't have), but unpatched image-optimizer and cache advisories accumulate.
@@ -98,7 +101,14 @@ sitemap dead (SEO), new/edited Notion pages never appear.
 - [x] **`yarn test` was failing** on two pre-existing Prettier violations
       (`components/PageHead.tsx`, `lib/site-config.ts`). CI only runs `yarn build`,
       so this went unnoticed.
-- [ ] **Domain mismatch.** See "Blocked on input".
+- [x] **Domain mismatch.** `site.config.ts` said `domain: 'yanbc.info'`, which is
+      not one of the two domains actually pointed at Vercel (`blog.yanbc.info` and
+      `www.yanbc.info`). Every `<link rel="canonical">`, `og:url`, RSS `feed_url`,
+      sitemap `<loc>` and social-image URL therefore advertised a host the site
+      doesn't serve as primary. Now set to `www.yanbc.info`, chosen because it is
+      what production was already serving, so nothing needs reindexing.
+      **Still to do in Vercel:** make `www.yanbc.info` the primary domain so
+      `blog.yanbc.info` 308-redirects to it, leaving exactly one live address.
 - [ ] **Unbounded ISR growth.** `fallback: true` plus any 32-hex string creates a
       new permanently-cached ISR entry per unique request, each triggering a full
       Notion fetch (`pages/[pageId].tsx`). Setting `rootNotionSpaceId` bounds this;
@@ -107,23 +117,31 @@ sitemap dead (SEO), new/edited Notion pages never appear.
 
 ## Blocked on input
 
-- [ ] **`rootNotionSpaceId`.** Open yanbc.info, run `window.block.space_id` in the
-      browser console, and put the result in `site.config.ts`. This single value
-      closes the open-proxy issue and bounds ISR growth.
-- [ ] **Domain.** `site.config.ts` says `yanbc.info`, but production serves
-      `www.yanbc.info` and the apex 308-redirects. Every `<link rel="canonical">`,
-      `og:url`, RSS `feed_url`, sitemap `<loc>` and social-image URL therefore
-      points at a redirecting host — self-referential canonicals are wrong
-      site-wide. Either set `domain: 'www.yanbc.info'` or make the apex primary in
-      Vercel; both are correct, but they must agree.
-- [ ] **SVG covers.** If no Notion page uses an SVG icon or cover, set
-      `dangerouslyAllowSVG: false` in `next.config.js`.
-- [ ] **Redis TLS.** If the provider supports it (Upstash and Redis Cloud both do),
-      set `REDIS_PROTOCOL=rediss` — and `REDIS_PORT` if it isn't 6379 — in the
-      Vercel environment. Without it the password crosses the network in plaintext.
+- [ ] **`rootNotionSpaceId`.** The UUID of the Notion workspace that owns the root
+      page — not the page ID, and it appears in no URL. Put it in `site.config.ts`;
+      this single value closes the open-proxy issue and bounds ISR growth.
+      Either open www.yanbc.info and read `window.block.space_id` in the browser
+      console (NotionPage.tsx attaches it), or run:
+
+      ```bash
+      curl -s -X POST 'https://www.notion.so/api/v3/loadPageChunk' \
+        -H 'Content-Type: application/json' \
+        -d '{"pageId":"16f72837-ae26-4610-96a7-4ede6774905c","limit":1,"cursor":{"stack":[]},"chunkNumber":0,"verticalColumns":false}' \
+        | python3 -c "import json,sys;d=json.load(sys.stdin);print(next(iter(d['recordMap']['block'].values()))['value']['space_id'])"
+      ```
+
+      That curl also doubles as the P0 diagnostic: it is the same unofficial API
+      the site calls on every render, so a 401/403 instead of a UUID means the root
+      page's public share link has lapsed.
+- [ ] **Redis TLS.** Deferred by the site owner: TLS is not currently enabled on
+      the Redis server, so the password crosses the network in plaintext. The code
+      is ready — once the server terminates TLS, set `REDIS_PROTOCOL=rediss` (and
+      `REDIS_PORT`, if it isn't 6379) in the Vercel environment. No code change
+      needed at that point.
 
 ## Suggested order
 
-1. Set `rootNotionSpaceId` and `REDIS_PROTOCOL=rediss`, redeploy.
-2. Vercel logs → fix the P0 outage.
-3. Domain mismatch, then the P2 remainder.
+1. Set `rootNotionSpaceId` (see above), redeploy.
+2. Make `www.yanbc.info` primary in Vercel so `blog.yanbc.info` redirects to it.
+3. Vercel logs → fix the P0 outage.
+4. Redis TLS, then the P2 remainder.
