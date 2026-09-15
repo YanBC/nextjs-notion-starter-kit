@@ -61,8 +61,8 @@ sitemap dead (SEO), new/edited Notion pages never appear.
       cache with a warning), credentials are URL-encoded, and `REDIS_PROTOCOL` /
       `REDIS_PORT` / `REDIS_URL` are configurable. **The default is still plain
       `redis://` to avoid breaking a working deployment — set
-      `REDIS_PROTOCOL=rediss` in Vercel** once the server supports it — see the
-      open TLS item below.
+      `REDIS_PROTOCOL=rediss` in Vercel** if the server ever supports TLS. It
+      currently does not — see "Accepted risks" below.
 - [x] **No security headers.** `next.config.js` now sets `X-Content-Type-Options`,
       `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy` and `Permissions-Policy`
       on every route. A CSP is deliberately *not* set: this site renders arbitrary
@@ -118,8 +118,8 @@ sitemap dead (SEO), new/edited Notion pages never appear.
       sitemap `<loc>` and social-image URL therefore advertised a host the site
       doesn't serve as primary. Now set to `www.yanbc.info`, chosen because it is
       what production was already serving, so nothing needs reindexing.
-      **Still to do in Vercel:** make `www.yanbc.info` the primary domain so
-      `blog.yanbc.info` 308-redirects to it, leaving exactly one live address.
+      `blog.yanbc.info` now 308-redirects to it in Vercel, so exactly one live
+      address remains.
 - [ ] **Unbounded ISR growth.** `fallback: true` plus any 32-hex string creates a
       new permanently-cached ISR entry per unique request, each triggering a full
       Notion fetch (`pages/[pageId].tsx`). Now bounded by `rootNotionSpaceId`,
@@ -127,17 +127,36 @@ sitemap dead (SEO), new/edited Notion pages never appear.
       `revalidate: 60` instead of `10`; left alone because it changes content
       freshness, which is a judgement call.
 
-## Blocked on input
+## Accepted risks
 
-- [ ] **Redis TLS.** Deferred by the site owner: TLS is not currently enabled on
-      the Redis server, so the password crosses the network in plaintext. The code
-      is ready — once the server terminates TLS, set `REDIS_PROTOCOL=rediss` (and
-      `REDIS_PORT`, if it isn't 6379) in the Vercel environment. No code change
-      needed at that point.
+- **Redis connects over plaintext.** Verified in the Redis Cloud console: the
+  Essentials free tier does not offer Transport Layer Security, so the password
+  crosses the network in the clear. Accepted for now.
+
+  Rationale: this database caches only LQIP preview images and
+  `uri-to-page-id:*` slug mappings — no secrets, no user data. The meaningful
+  risk is an on-path attacker recovering the password and poisoning the cache,
+  and the worst version of that is already mitigated: a poisoned slug mapping
+  sends `lib/resolve-notion-page.ts` to an attacker-chosen page, but the result
+  still passes through `pageAcl`, which now rejects anything outside the
+  workspace with a 404. Before `rootNotionSpaceId` was set, it would have
+  rendered.
+
+  Conditions: keep this Redis password unique to this database and reused
+  nowhere else. On upgrading to a paid plan, enable TLS and set
+  `REDIS_PROTOCOL=rediss` in Vercel — `@keyvhq/redis` wraps ioredis 5.3, which
+  honours the `rediss://` scheme natively, so no code change is needed. If the
+  provider requires a *client* certificate (mTLS) rather than plain server-side
+  TLS, that does need code to pass the cert into ioredis.
+
+- **CIDR allow list is deliberately Off.** Not a gap to close: Vercel's
+  serverless egress IPs are dynamic on Hobby/Pro (static egress is an Enterprise
+  feature), so any allowlist is either `0.0.0.0/0` — no security value — or a
+  specific range that breaks the site whenever Vercel reassigns it. It is also
+  unrelated to TLS; the two are independent controls.
 
 ## Suggested order
 
 1. Deploy this branch — it may clear the P0 outage on its own (see P0).
 2. If still down: `yarn dev`, hit `/api/search-notion`, read the stack trace.
-3. Make `www.yanbc.info` primary in Vercel so `blog.yanbc.info` redirects to it.
-4. Redis TLS, then the P2 remainder.
+3. The P2 remainder.
