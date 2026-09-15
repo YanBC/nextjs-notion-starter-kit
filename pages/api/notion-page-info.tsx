@@ -12,7 +12,7 @@ import {
 import * as libConfig from '@/lib/config'
 import { isImageUrlReachable } from '@/lib/image-fetch'
 import { mapImageUrl } from '@/lib/map-image-url'
-import { notion } from '@/lib/notion-api'
+import { notion, notionGotOptions } from '@/lib/notion-api'
 import { ExtendedRecordMap, NotionPageInfo } from '@/lib/types'
 
 export default async (req: NextApiRequest, res: NextApiResponse) => {
@@ -27,7 +27,9 @@ export default async (req: NextApiRequest, res: NextApiResponse) => {
 
   let recordMap: ExtendedRecordMap
   try {
-    recordMap = await notion.getPage(pageId)
+    recordMap = await notion.getPage(pageId, {
+      gotOptions: notionGotOptions
+    })
   } catch (err) {
     console.warn('notion-page-info error', pageId, err.message)
     return res.status(404).send({ error: `notion page "${pageId}" not found` })

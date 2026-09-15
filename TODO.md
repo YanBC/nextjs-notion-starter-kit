@@ -6,34 +6,50 @@ and the ones under "Blocked on input" need information only the site owner has.
 
 ## P0 — production is broken
 
-Production serves a ~220-day-old stale ISR cache (`x-vercel-cache: STALE`, `age: 19008048`).
-Every route that talks to Notion at request time returns 500:
-`/sitemap.xml`, `/feed`, `/api/search-notion`, `/api/notion-page-info`,
-`/api/social-image`, and `/_next/data/<buildId>/<pageId>.json` for uncached paths.
-`revalidate: 10` retries constantly, each attempt throws, Vercel keeps serving the
-last successful build. Effect: search dead, all OG/social images broken, RSS +
-sitemap dead (SEO), new/edited Notion pages never appear.
+**Root cause confirmed (2026-09-15)** from the failing Vercel build log:
 
-- [ ] Root-cause the 500s. Needs `vercel logs <deployment-url>` or a read-scoped
-      Vercel token. Fastest local repro: `yarn dev`, then hit
-      `localhost:3000/api/search-notion` and read the stack trace.
-      RULED OUT: the root page's public share link has *not* lapsed.
-      `/api/v3/getPublicPageData` returns `isPublicShareLink: true`,
-      `requireLogin: false`, `publicAccess.disabled: false`, `isDeleted: false`,
-      and `loadPageChunk` returns blocks normally. Notion is answering fine.
-      Remaining suspects, in order:
-      1. Redis. TLS is not enabled on the server, every request path touches the
-         cache, and until the fix below there was no Keyv `error` listener — so a
-         single connection error threw an uncaught exception and killed the
-         lambda, 500ing everything in it. That listener is now attached, so a
-         redeploy alone may clear the outage.
-      2. `notion-client` 6.16 vs. the current Notion private API. A response-shape
-         change would throw during render while simple fetches still succeed.
-         Weak corroboration: the page block returned by `loadPageChunk` no longer
-         carries a `space_id` field, so the shape has drifted somewhat from what
-         this version of the library expects.
-- [ ] After the fix, confirm `/feed`, `/sitemap.xml`, `/api/social-image?id=<root>`
-      all return 200 and that `x-vercel-cache` goes `HIT`/`MISS` rather than `STALE`.
+```
+notion getPage 16f72837ae26461096a74ede6774905c
+page load error {
+  pageId: '16f72837-ae26-4610-96a7-4ede6774905c',
+  spaceId: 'cf1ea656-17fa-4fa7-a13a-ad33c5c79bc5'
+} undefined Response code 403 (Forbidden)
+Error: Error loading page "16f72837-ae26-4610-96a7-4ede6774905c"
+    at getAllPagesImpl ... at getStaticPaths
+```
+
+Notion's private API returns **403 Forbidden to requests from Vercel's
+datacenter IPs**. The very first `getPage` of the crawl fails 0.3s into
+"Collecting page data", so `getAllPagesImpl` stores `null` for the root page,
+`lib/get-site-map.ts:46` throws, `getStaticPaths` fails, and the deployment
+dies. Every build has failed this way, which is why Vercel still serves a
+~220-day-old one.
+
+This is about *where the request comes from*, not the page. The identical
+request succeeds from a residential IP (verified by hand), and
+`/api/v3/getPublicPageData` reports `isPublicShareLink: true`,
+`requireLogin: false`, `publicAccess.disabled: false`, `isDeleted: false`.
+The same 403 hits request-time fetches, which is why `/feed`, `/sitemap.xml`
+and all three API routes 500.
+
+- [x] Send browser-like headers on every Notion call — `notionGotOptions` in
+      `lib/notion-api.ts`, threaded through all five call sites. `got` announces
+      itself as `user-agent: got (https://github.com/sindresorhus/got)` by
+      default, which is the shape that gets refused. notion-client has no global
+      option for this, hence the per-call threading.
+- [ ] If headers alone aren't enough, set `NOTION_TOKEN` in Vercel to a
+      `token_v2` cookie from a logged-in Notion session — the plumbing is
+      already in place and inert while unset. It grants full access to that
+      Notion account and expires periodically, so treat it as a real secret.
+- [ ] Confirm after deploying: `/feed`, `/sitemap.xml` and
+      `/api/social-image?id=<root>` return 200, and `x-vercel-cache` reads
+      `HIT`/`MISS` rather than `STALE`.
+
+Deliberately NOT changed: `get-site-map.ts` still throws when a page fails to
+load. Making it skip nulls was considered and rejected — when the *root* page is
+what fails, skipping would produce a build that "succeeds" with zero pages and
+replace a stale-but-working site with an empty one. Failing loudly is correct
+here. Skipping only non-root pages would be a reasonable future refinement.
 
 ## P1 — security
 
