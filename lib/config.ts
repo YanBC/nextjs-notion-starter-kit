@@ -123,10 +123,20 @@ export const isRedisEnabled: boolean =
 export const redisHost: string | null = getEnv('REDIS_HOST', null)
 export const redisPassword: string | null = getEnv('REDIS_PASSWORD', null)
 export const redisUser: string = getEnv('REDIS_USER', 'default')
-export const redisUrl = getEnv(
-  'REDIS_URL',
-  `redis://${redisUser}:${redisPassword}@${redisHost}`
-)
+// most managed Redis providers terminate TLS and listen on a non-default port;
+// set REDIS_PROTOCOL=rediss (and REDIS_PORT) rather than sending the password
+// over a cleartext connection
+export const redisProtocol: string = getEnv('REDIS_PROTOCOL', 'redis')
+export const redisPort: string | null = getEnv('REDIS_PORT', null)
+// note: null rather than a `redis://default:undefined@undefined` URL when
+// REDIS_HOST is unset; lib/db.ts falls back to an in-memory cache instead
+export const redisUrl: string | null =
+  getEnv('REDIS_URL', null) ||
+  (redisHost
+    ? `${redisProtocol}://${encodeURIComponent(redisUser)}:${encodeURIComponent(
+        redisPassword || ''
+      )}@${redisHost}${redisPort ? `:${redisPort}` : ''}`
+    : null)
 export const redisNamespace: string | null = getEnv(
   'REDIS_NAMESPACE',
   'preview-images'

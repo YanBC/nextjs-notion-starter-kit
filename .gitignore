@@ -12,6 +12,9 @@
 /.next/
 /out/
 
+# typescript (tsconfig.json sets "incremental": true)
+*.tsbuildinfo
+
 # production
 /build
 

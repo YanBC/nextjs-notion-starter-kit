@@ -212,13 +212,15 @@ export const NotionPage: React.FC<types.PageProps> = ({
 
   const title = getBlockTitle(block, recordMap) || site.name
 
-  console.log('notion page', {
-    isDev: config.isDev,
-    title,
-    pageId,
-    rootNotionPageId: site.rootNotionPageId,
-    recordMap
-  })
+  if (config.isDev) {
+    // note: deliberately omits `recordMap`. Logging it dumped the full content of
+    // every page into the server logs and into every visitor's console.
+    console.log('notion page', {
+      title,
+      pageId,
+      rootNotionPageId: site.rootNotionPageId
+    })
+  }
 
   if (!config.isServer) {
     // add important objects to the window global for easy debugging

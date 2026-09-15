@@ -1,7 +1,8 @@
-# TODO — audit findings (2026-09-15)
+# TODO — audit findings
 
-Findings from a code + live-deployment audit of yanbc.info. Ordered by priority.
-File references are `path:line` as of commit `e9e76e9`.
+Findings from a code + live-deployment audit of yanbc.info (2026-09-15).
+Items marked `[x]` were fixed in the follow-up commit; the rest are still open,
+and the ones under "Blocked on input" need information only the site owner has.
 
 ## P0 — production is broken
 
@@ -13,55 +14,61 @@ Every route that talks to Notion at request time returns 500:
 last successful build. Effect: search dead, all OG/social images broken, RSS +
 sitemap dead (SEO), new/edited Notion pages never appear.
 
-- [ ] Root-cause the 500s. Need `vercel logs <deployment-url>` or a read-scoped
+- [ ] Root-cause the 500s. Needs `vercel logs <deployment-url>` or a read-scoped
       Vercel token. Fastest local repro: `yarn dev`, then hit
       `localhost:3000/api/search-notion` and read the stack trace.
-      Suspects: `notion-client` 6.16 vs. current Notion private API, root page's
-      public share link lapsed, or Redis (see "Keyv error listener" below).
+      Remaining suspects, in order:
+      1. The root page's public share link lapsed (most likely — it produces a
+         Notion 403/404 on every request and needs no code change to fix).
+      2. Redis. The missing Keyv `error` listener below is fixed, which removes
+         the "one blip kills the lambda" failure mode, so if Redis was the cause
+         the site should recover on the next deploy.
+      3. `notion-client` 6.16 vs. the current Notion private API.
 - [ ] After the fix, confirm `/feed`, `/sitemap.xml`, `/api/social-image?id=<root>`
       all return 200 and that `x-vercel-cache` goes `HIT`/`MISS` rather than `STALE`.
 
 ## P1 — security
 
+- [x] **`lib/db.ts` had no `error` listener.** Keyv re-emits store errors; an
+      unhandled `'error'` event on an EventEmitter throws and kills the process, so
+      one Redis blip 500s everything in that lambda. A listener now downgrades it
+      to a warning — every caller already treats the cache as best-effort.
+- [x] **`/api/search-notion` forwarded the raw request body to Notion.** The body
+      is no longer forwarded: `ancestorId` is pinned to `rootNotionPageId`,
+      `query` must be a string of at most 256 chars, `limit` is clamped to 1..100,
+      and caller-supplied `filters` are dropped (notion-client supplies the
+      defaults). Note the empty query is still allowed — react-notion-x warms the
+      search index with one on mount.
+- [x] **Blind SSRF in image fetches.** `lib/image-fetch.ts` now gates every
+      server-side image fetch on a hostname allowlist (shared with
+      `next/image` via `lib/image-domains.js`), with a 10s timeout, at most 3
+      redirects, and a 10 MB cap enforced via `downloadProgress` so an
+      attacker-chosen URL can't exhaust lambda memory. This also closes a hole
+      in `react-notion-x`'s `defaultMapImageUrl`, which passes a URL through
+      untouched when it merely *starts with* `https://images.unsplash.com` —
+      `images.unsplash.com.example.net` satisfied that prefix match.
+- [x] **`redisUrl` had no TLS, no port, and silently became
+      `redis://default:undefined@undefined`** when `REDIS_HOST` was unset.
+      It is now `null` in that case (and `lib/db.ts` falls back to an in-memory
+      cache with a warning), credentials are URL-encoded, and `REDIS_PROTOCOL` /
+      `REDIS_PORT` / `REDIS_URL` are configurable. **The default is still plain
+      `redis://` to avoid breaking a working deployment — set
+      `REDIS_PROTOCOL=rediss` in Vercel.** See "Blocked on input".
+- [x] **No security headers.** `next.config.js` now sets `X-Content-Type-Options`,
+      `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy` and `Permissions-Policy`
+      on every route. A CSP is deliberately *not* set: this site renders arbitrary
+      Notion content plus Twitter/PostHog/Fathom/Prism, so a blanket policy has to
+      be tuned against real pages first.
 - [ ] **Open Notion proxy — ACL is inert.** `site.config.ts:9` sets
-      `rootNotionSpaceId: null`, which disables both workspace checks
-      (`lib/acl.ts:41-45`, `pages/api/notion-page-info.tsx:39-47`). Anyone can load
+      `rootNotionSpaceId: null`, which disables the workspace check in
+      `lib/acl.ts` and `pages/api/notion-page-info.tsx`. Anyone can load
       `https://yanbc.info/<any-public-notion-page-id>` and have your domain render —
       and ISR-cache — someone else's Notion page. Phishing / spam / SEO poisoning
-      under your domain, on your Vercel quota.
-      Fix: open the site, read `window.block.space_id` in the console, set
-      `rootNotionSpaceId` in `site.config.ts`.
-- [ ] **Blind SSRF in `/api/notion-page-info`** (`pages/api/notion-page-info.tsx:122-133`).
-      With the ACL off, an attacker points `pageId` at a Notion page they control
-      whose `Social Image` property / cover is an arbitrary URL; the server does
-      `got.head(url)` with no host allowlist, no timeout, redirects followed —
-      an internal-reachability oracle from inside Vercel's network.
-      `lib/preview-images.ts:52` is worse: `got(url, {responseType: 'buffer'})`
-      downloads attacker-chosen URLs with no size cap into lambda memory.
-      Fix: the ACL above closes most of it; add a host allowlist + timeout +
-      size cap on image fetches to close it properly.
-- [ ] **`/api/search-notion` forwards the raw request body to Notion**
-      (`pages/api/search-notion.ts:11-14`). No auth, no rate limit, no validation —
-      caller controls `ancestorId`, `limit`, `filters` using your Notion session.
-      Fix: pin `ancestorId` to `rootNotionPageId`, whitelist `query`/`limit`,
-      cap query length, add rate limiting.
-- [ ] **`lib/db.ts` has no `error` listener.** Keyv re-emits store errors; an
-      unhandled `'error'` event on an EventEmitter throws and kills the process, so
-      one Redis blip 500s everything in that lambda. Plausible cause of the P0 outage.
-      Fix: `db.on('error', (err) => console.warn('keyv error', err))`.
-- [ ] **`redisUrl` has no TLS and no port** (`lib/config.ts:126-129`):
-      `redis://user:pass@host`. Most managed Redis wants `rediss://` + explicit port;
-      without TLS the password crosses the network in plaintext. If `REDIS_HOST` is
-      unset the URL silently becomes `redis://default:undefined@undefined`.
-- [ ] **No security headers.** Only Vercel's HSTS — no CSP, `X-Frame-Options`,
-      `Referrer-Policy`, `X-Content-Type-Options`, `Permissions-Policy`.
-      Add a `headers()` block to `next.config.js`. Note `lib/oembed.ts` embeds the
-      site in an iframe, so choose `frame-ancestors` deliberately rather than a
-      blanket `DENY`.
-- [ ] **`dangerouslyAllowSVG: true`** (`next.config.js:19`). Mitigated by the CSP on
-      the image response, but combined with the open proxy (attacker-controlled
-      Notion page → attacker-uploaded SVG on `s3.us-west-2.amazonaws.com`) it is
-      served through your origin. Turn off unless SVG covers are actually used.
+      under your domain, on your Vercel quota. The check itself is now fixed (see
+      P2), so this needs only the ID. See "Blocked on input".
+- [ ] **`dangerouslyAllowSVG: true`** (`next.config.js`). Left on deliberately —
+      turning it off breaks any Notion page using an SVG icon or cover, which I
+      can't verify from here. See "Blocked on input".
 - [ ] **Next.js 12.3.4 is end-of-life** — no security patches since 2023. Not
       currently exploitable here (CVE-2025-29927 needs middleware, which this app
       doesn't have), but unpatched image-optimizer and cache advisories accumulate.
@@ -69,36 +76,54 @@ sitemap dead (SEO), new/edited Notion pages never appear.
 
 ## P2 — bugs
 
-- [ ] **Domain mismatch.** `site.config.ts:13` sets `domain: 'yanbc.info'`, but
-      production serves `www.yanbc.info` and the apex 308-redirects. Every
-      `<link rel="canonical">`, `og:url`, RSS `feed_url`, sitemap `<loc>` and
-      social-image URL points at the redirecting host — self-referential canonicals
-      are wrong site-wide. Fix: set `domain: 'www.yanbc.info'`, or make the apex
-      primary in Vercel.
-- [ ] **API routes `throw` instead of returning 4xx**
-      (`pages/api/notion-page-info.tsx:25,34`). An invalid `pageId` becomes a 500
-      HTML error page rather than a 400 JSON body.
-- [ ] **Logging the entire record map.** `components/NotionPage.tsx:215` logs the
-      full `recordMap` — server-side (Vercel log cost, full page content in logs)
-      and in every visitor's console. Same for `pages/api/search-notion.ts:15`
-      (full results), `lib/resolve-notion-page.ts:85` (`console.log(site)`), and
-      `pages/[pageId].tsx:48` (every static path). Strip before redeploying, since
-      a working deploy will actually push traffic through these.
-- [ ] **`lib/acl.ts:46` — `if (process.env.NODE_ENV)` is always truthy.**
-      `NODE_ENV` is always `'production'` or `'development'`; the intended dev
-      bypass never works. Upstream bug. Harmless today only because the outer
-      condition can't fire while `rootNotionSpaceId` is null.
-- [ ] **`lib/oembed.ts` is dead code and would crash if wired up** —
-      `user.given_name` at `lib/oembed.ts:30` has no optional chaining after an
-      `?.value` that can be undefined. No API route imports it.
+- [x] **`lib/acl.ts` — `if (process.env.NODE_ENV)` is always truthy.**
+      `NODE_ENV` is always `'production'`, `'development'` or `'test'`, so the
+      guard it was meant to express never existed. The workspace check is the
+      point of the function, so it now applies unconditionally. (Upstream bug.)
+- [x] **API routes `throw` instead of returning 4xx.** An invalid `pageId` was a
+      500 HTML error page; it is now a 400 JSON body, an unresolvable page is a
+      404, and a Notion outage is a 502 from `/api/search-notion` rather than an
+      unhandled rejection.
+- [x] **Logging the entire record map.** `components/NotionPage.tsx` logged the
+      full `recordMap` server-side and in every visitor's console; it is now
+      dev-only and omits the record map. Also removed: full search results
+      (`pages/api/search-notion.ts`), `console.log(site)`
+      (`lib/resolve-notion-page.ts`), every static path (`pages/[pageId].tsx`),
+      the per-image `lqip` line (`lib/preview-images.ts`), and the page info dump
+      (`pages/api/social-image.tsx`). The build-time crawl log in
+      `lib/get-site-map.ts` is kept — it's useful build output and leaks nothing.
+- [x] **`lib/oembed.ts` would crash if wired up** — `user.given_name` had no
+      optional chaining after an `?.value` that can be undefined. Fixed, though
+      the module is still dead code (no API route imports it).
+- [x] **`yarn test` was failing** on two pre-existing Prettier violations
+      (`components/PageHead.tsx`, `lib/site-config.ts`). CI only runs `yarn build`,
+      so this went unnoticed.
+- [ ] **Domain mismatch.** See "Blocked on input".
 - [ ] **Unbounded ISR growth.** `fallback: true` plus any 32-hex string creates a
       new permanently-cached ISR entry per unique request, each triggering a full
-      Notion fetch (`pages/[pageId].tsx:28-50`). The ACL fix bounds this; also
-      consider `revalidate: 60` instead of `10`.
+      Notion fetch (`pages/[pageId].tsx`). Setting `rootNotionSpaceId` bounds this;
+      also consider `revalidate: 60` instead of `10`. Left alone for now because it
+      changes content freshness, which is a judgement call.
+
+## Blocked on input
+
+- [ ] **`rootNotionSpaceId`.** Open yanbc.info, run `window.block.space_id` in the
+      browser console, and put the result in `site.config.ts`. This single value
+      closes the open-proxy issue and bounds ISR growth.
+- [ ] **Domain.** `site.config.ts` says `yanbc.info`, but production serves
+      `www.yanbc.info` and the apex 308-redirects. Every `<link rel="canonical">`,
+      `og:url`, RSS `feed_url`, sitemap `<loc>` and social-image URL therefore
+      points at a redirecting host — self-referential canonicals are wrong
+      site-wide. Either set `domain: 'www.yanbc.info'` or make the apex primary in
+      Vercel; both are correct, but they must agree.
+- [ ] **SVG covers.** If no Notion page uses an SVG icon or cover, set
+      `dangerouslyAllowSVG: false` in `next.config.js`.
+- [ ] **Redis TLS.** If the provider supports it (Upstash and Redis Cloud both do),
+      set `REDIS_PROTOCOL=rediss` — and `REDIS_PORT` if it isn't 6379 — in the
+      Vercel environment. Without it the password crosses the network in plaintext.
 
 ## Suggested order
 
-1. Vercel logs → fix the P0 outage (ship the `rootNotionSpaceId` fix alongside, it's cheap).
-2. One commit: `rootNotionSpaceId` + Keyv error handler + `search-notion` input validation.
-3. Security headers + log cleanup.
-4. Domain mismatch, then the P2 remainder.
+1. Set `rootNotionSpaceId` and `REDIS_PROTOCOL=rediss`, redeploy.
+2. Vercel logs → fix the P0 outage.
+3. Domain mismatch, then the P2 remainder.
