@@ -64,10 +64,12 @@ export const getServerSideProps: GetServerSideProps = async ({ req, res }) => {
       recordMap
     )
     const publishedTime = getPageProperty<number>('Published', block, recordMap)
-    const date = lastUpdatedTime
-      ? new Date(lastUpdatedTime)
-      : publishedTime
+    // RSS readers treat `pubDate` as when a post appeared, so editing an old
+    // post must not resurface it as new; `Last Updated` is only a fallback
+    const date = publishedTime
       ? new Date(publishedTime)
+      : lastUpdatedTime
+      ? new Date(lastUpdatedTime)
       : undefined
     const socialImageUrl = getSocialImageUrl(pageId)
 
