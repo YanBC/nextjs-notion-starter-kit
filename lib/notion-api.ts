@@ -20,8 +20,9 @@ const notionHeaders = {
 const notionRetry = {
   limit: 5,
   methods: ['POST'],
-  // give up rather than stall a build or a lambda on a long `Retry-After`
-  maxRetryAfter: 60_000
+  // Notion has been seen sending `Retry-After: 60`, so leave headroom above
+  // that, but give up rather than stall a build or a lambda for minutes
+  maxRetryAfter: 120_000
 }
 
 // Record tables whose entries carry a `value`. `collection_query` and
