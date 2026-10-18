@@ -12,6 +12,18 @@ const notionHeaders = {
   'accept-language': 'en-US,en;q=0.9'
 }
 
+// Notion answers 429 when a build crawls the site too fast — `next build` runs
+// one crawl per export worker (`getAllPages` is memoized per process), so a
+// 4-core CI runner fires three at once. `got` already retries 429 with
+// exponential backoff and honors `Retry-After`, but only for GET; every Notion
+// endpoint is a POST. They are all reads, so retrying them is safe.
+const notionRetry = {
+  limit: 5,
+  methods: ['POST'],
+  // give up rather than stall a build or a lambda on a long `Retry-After`
+  maxRetryAfter: 60_000
+}
+
 // Record tables whose entries carry a `value`. `collection_query` and
 // `signed_urls` are plain maps, not record tables, so they are left alone.
 const recordTables = ['block', 'collection', 'collection_view', 'notion_user']
@@ -69,7 +81,7 @@ export function normalizeRecordMap<T>(recordMap: T): T {
 }
 
 /**
- * Applies both workarounds in one place.
+ * Applies all three workarounds in one place.
  *
  * Normalizing inside `fetch` rather than after `getPage` is deliberate:
  * notion-client walks the record map itself to decide which blocks and
@@ -93,6 +105,7 @@ class PatchedNotionAPI extends NotionAPI {
       body,
       headers,
       gotOptions: {
+        retry: notionRetry,
         ...gotOptions,
         headers: { ...notionHeaders, ...gotOptions?.headers }
       }
