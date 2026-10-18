@@ -70,6 +70,8 @@ URL slugs come from `lib/get-canonical-page-id.ts` → `lib/map-page-url.ts`. `i
 
 A page is treated as a blog post when `block.type === 'page' && block.parent_table === 'collection'`; that alone drives the table-of-contents aside. `?lite=true` renders the embed-friendly variant (used by oEmbed). In the browser, `pageId`, `recordMap`, and `block` are attached to `window` for debugging — `block.space_id` is how you find the workspace ID.
 
+Analytics runs two trackers side by side: PostHog (initialised in `pages/_app.tsx` when `NEXT_PUBLIC_POSTHOG_ID` is set) and Vercel Web Analytics (a plain `/_vercel/insights/script.js` tag in `pages/_document.tsx`, rendered only when `process.env.VERCEL` is set). The Vercel tag is used instead of the `@vercel/analytics` package to avoid a dependency; it tracks SPA navigations by hooking `history.pushState`.
+
 CSS overrides for Notion content go in `styles/notion.css`, which targets global classnames from `react-notion-x`'s `styles.css`. Every block also gets a `.notion-block-<id>` class, so individual blocks can be targeted by ID.
 
 ### API routes

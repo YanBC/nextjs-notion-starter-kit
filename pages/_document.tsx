@@ -64,6 +64,13 @@ export default class MyDocument extends Document {
             <Main />
 
             <NextScript />
+
+            {/* Vercel Web Analytics, alongside PostHog in _app.tsx. Served by
+                the Vercel platform, so it only loads on Vercel deployments. It
+                tracks the initial load and history.pushState navigations. */}
+            {process.env.VERCEL && (
+              <script defer src='/_vercel/insights/script.js' />
+            )}
           </body>
         </Html>
       </IconContext.Provider>
